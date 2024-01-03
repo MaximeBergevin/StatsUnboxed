@@ -28,6 +28,7 @@ sse <- function(params, x, y){
   sum(residuals^2)                     # Error sum of squares
 }
 
+# Optimize the function SSE, i.e., finds params allowing sse to return the lowest value
 optim(
   par = c(b0 = 10, b1 = -1),
   fn = sse,
