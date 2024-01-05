@@ -89,11 +89,13 @@ simpleRegressionResiduals.plot <- simpleRegression.data %>%
     geom_smooth(method = 'lm', se = FALSE, color = 'black') +
     labs(x = 'VO2max', y = 'Pain level') +
     theme(
-      axis.title = element_text(size = 15, face = 'bold'),
+      #panel.background = element_rect(fill = 'transparent'),
+      plot.background = element_rect(fill = 'transparent'),
+      axis.title = element_text(size = 15, face = 'bold', color = 'white'),
       legend.position = 'none'
     )
 
-ggsave(simpleRegressionResiduals.plot, file = 'General Linear Model/Figures/plot_regression-residuals.jpg',
+ggsave(simpleRegressionResiduals.plot, file = 'General Linear Model/Figures/plot_regression-residuals.png',
        width = 4, height = 3, dpi = 'retina', scale = 0.75)
 
 
