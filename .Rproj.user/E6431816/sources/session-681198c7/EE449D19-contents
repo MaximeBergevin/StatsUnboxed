@@ -84,19 +84,21 @@ simpleRegressionResiduals.plot <- simpleRegression.data %>%
   mutate(predictedPain = predict(regression.lm)) %>%
   ggplot(aes(x = vo2peak, y = pain)) +
     geom_segment(aes(x = vo2peak, xend = vo2peak, yend = predictedPain),
-                 linetype = 'dotted', color = 'red', linewidth  = 0.5) +
-    geom_point(shape = 'triangle', color = '#0a4c6e', alpha = 0.9, size = 3) +
+                 linetype = 'dotted', color = 'red', linewidth  = 0.25) +
+    geom_point(shape = 'triangle', color = '#0a4c6e', alpha = 0.9, size = 2) +
     geom_smooth(method = 'lm', se = FALSE, color = 'black') +
+    scale_y_continuous(limits = c(0,10)) +
     labs(x = 'VO2max', y = 'Pain level') +
     theme(
-      #panel.background = element_rect(fill = 'transparent'),
       plot.background = element_rect(fill = 'transparent'),
       axis.title = element_text(size = 15, face = 'bold', color = 'white'),
+      axis.text = element_text(color = 'grey'),
       legend.position = 'none'
     )
 
-ggsave(simpleRegressionResiduals.plot, file = 'General Linear Model/Figures/plot_regression-residuals.png',
-       width = 4, height = 3, dpi = 'retina', scale = 0.75)
+ggsave(simpleRegressionResiduals.plot, 
+       file = 'General Linear Model/Figures/plot_regression-residuals.png',
+       width = 6, height = 4.5, dpi = 'retina', units = 'cm', bg = 'transparent')
 
 
 simpleRegressionMean.plot <- simpleRegression.data %>%
