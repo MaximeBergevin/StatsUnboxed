@@ -24,7 +24,7 @@ mixed.sensitivity <- function(
     variables,
     coef_name,
     start_delta = 0,
-    step = 0.05,
+    step_size = 0.05,
     min_step = 0.0005,
     tolerance = 0.02,
     n_sim = 200,
