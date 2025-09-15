@@ -95,12 +95,10 @@ power_analysis_simr <- function(
       )
       
       # Define the statistical test to run
-      # 'f' corresponds to an F-test (for ANOVA).
-      # 'z' is the default for coefficients (a t-test, essentially).
       if(test_type == 'anova') {
-        test_to_run <- simr::fixed(effect_name, method = "f")
+        test_to_run <- simr::fixed(effect_name, method = "anova")
       } else {
-        test_to_run <- simr::fixed(coef_name, method = "z")
+        test_to_run <- simr::fixed(coef_name, method = "t")
       }
       
       # Run the power simulation using simr
