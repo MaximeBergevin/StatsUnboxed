@@ -1,0 +1,132 @@
+#' Perform a simulation-based power analysis for a linear mixed model using simr.
+#'
+#' This function calculates statistical power across a grid of participant
+#' numbers and observation counts for a specific fixed effect. It uses the
+#' `simr` package for stable simulation workflow.
+#'
+#' @param model              A fitted object of class `lmerMod` or `lmerModLmerTest`. This serves
+#'                           as the template for the data structure and variance components.
+#' @param cluster            Character string. The name of the random grouping variable
+#'                           that represents the participants (e.g., "participant", "subject").
+#'                           Must match the name in the formula.
+#' @param coef_name          Character string. The exact name of the coefficient in the
+#'                           `fixef()` output to be modified by the SESOI (e.g., "forceLevelhighForce"). 
+#'                           Used when `test_type` is 't-test'.
+#' @param sesoi              Numeric. The Smallest Effect Size of Interest. This is the raw
+#'                           (unstandardized) effect size you want to be able to detect.
+#' @param n_range.           Numeric vector. A vector of participant sample sizes to simulate (e.g., `c(20, 30, 40, 50)`).
+#' @param obs_range          Numeric vector. A vector of the number of
+#'                           observations PER CONDITION to simulate for each participant.
+#' @param n_sim              Integer. The number of simulations to run per condition.
+#'                           NOTE: Start with a small number (e.g., 100) for testing. Use 1000+ for final results.
+#' @param target_ci_width    Numeric. The width of the confidence interval for the power estimate.
+#'
+#' @return             A tibble (data frame) containing the power for each combination of
+#'                     n_participants and n_observations.
+
+aipe_simr <- function(
+    model,
+    cluster,
+    coef_name,
+    sesoi,
+    target_ci_width = sesoi,
+    n_range,
+    obs_range,
+    n_sim = 1000
+) {
+  
+  # Extract parameter and set up
+  #' -----------------------------
+  original_fixef <- lme4::fixef(model)
+  
+  if (!coef_name %in% names(original_fixef)) {
+    stop(paste("Coefficient '", coef_name, "' not found in model's fixed effects.",
+               "\nAvailable coefficients:", paste(names(original_fixef), collapse = ", ")))
+  }
+  
+  # Create new fixed effects vector with SESOI injected
+  fixed_with_sesoi <- original_fixef
+  fixed_with_sesoi[coef_name] <- sesoi
+  
+  # Extract variance components
+  variances <- lme4::VarCorr(model)
+  model_sigma <- sigma(model)
+  
+  # Get a template of the experimental design (all predictor columns)
+  outcome_var <- as.character(formula(model)[[2]])
+  design_template <- model@frame %>%
+    dplyr::select(-dplyr::all_of(c(outcome_var, cluster))) %>%
+    dplyr::distinct()
+  
+  # Set up results storage
+  results_list <- list()
+  
+  #  Main power sim loop using nested for loops
+  #' -------------------------------------------
+  for (n_participants in n_range) {
+    for (n_obs_per_condition in obs_range) {
+      
+      message(paste("Simulating (simr): ", n_participants, " participants, ",
+                    n_obs_per_condition, " observations per condition..."))
+      
+      # Create the specific data frame for this simulation run
+      # This data frame has the desired N and obs count, but no outcome yet
+      new_data <- tidyr::expand_grid(
+        !!cluster := factor(1:n_participants),
+        design_template
+      ) %>%
+        tidyr::uncount(n_obs_per_condition)
+      
+      # Create the hypothetical model for this specific design
+      # makeLmer creates a model object with the desired SESOI and variance,
+      # fitted to the structure of the hypothetical dataset.
+      model_for_doFit <- simr::makeLmer(
+        formula = formula(model),
+        fixef = fixed_with_sesoi,
+        VarCorr = variances,
+        sigma = model_sigma,
+        data = new_data
+      )
+      
+      ci_widths <- replicate(n_sim, {
+        # Simulate one dataset and fit model to it; estimated model
+        new_y <- simulate(model_for_doFit, nsim = 1)[[1]]
+        sim_fit <- simr::doFit(fit = model_for_doFit, y = new_y)
+        # Handle cases where model fitting fails 
+        if(is.null(sim_fit)){
+          NA_real_
+        } else {
+          # Compute CI width from estimated model
+          ci <- confint(sim_fit, parm = coef_name, method = "Wald")
+          ci[2] - ci[1]
+        }
+      })
+      # Check for any simulation failures (NA widths)
+      n_failures <- sum(is.na(ci_widths))
+      if (n_failures > 0) {
+        message(paste0(
+          "⚠️ Warning: ", n_failures, " out of ", n_sim, 
+          " simulations failed to converge for this combination."
+        ))
+      }
+      
+
+      # Calculate the 95th percentile of the CI widths to assess precision
+      achieved_precision <- stats::quantile(ci_widths, probs = 0.95, na.rm = TRUE)
+      
+      # Store results for this combination
+      results_list[[length(results_list) + 1]] <- tibble::tibble(
+        n_participants = n_participants,
+        n_obs_per_condition = n_obs_per_condition,
+        ci_width_quantile = achieved_precision,
+        precision_met = achieved_precision <= target_ci_width
+      )
+    }
+  }
+  
+  # Combine all results into a single data frame
+  power_results <- dplyr::bind_rows(results_list)
+  
+  message("✅ Simulation complete!")
+  return(power_results)
+}
