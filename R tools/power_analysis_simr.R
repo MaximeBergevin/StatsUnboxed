@@ -103,21 +103,27 @@ power_analysis_simr <- function(
       
       # Run the power simulation using simr
       # powerSim handles the entire "simulate > refit > test" loop internally.
-      power_sim_results <- simr::powerSim(
-        model_for_power_sim,
-        test = test_to_run,
-        nsim = n_sim,
-        alpha = alpha
-      )
+      power_sim_results <- suppressWarnings(
+        simr::powerSim(
+          model_for_power_sim,
+          test = test_to_run,
+          nsim = n_sim,
+          alpha = alpha
+          )
+        )
       
       # Extract the power (mean of successful simulations)
       power <- summary(power_sim_results)$mean
       
-      # Store results for this combination
+      # Calculate the proportion of simulations with warnings
+      warning_prop <- length(power_sim_results$warnings) / n_sim
+      
+      # Store results for this combination, including the warning proportion
       results_list[[length(results_list) + 1]] <- tibble::tibble(
         n_participants = n_participants,
         n_obs_per_condition = n_obs_per_condition,
-        power = power
+        power = power,
+        warning_prop = warning_prop # New column
       )
     }
   }
