@@ -88,29 +88,34 @@ aipe_simr <- function(
         data = new_data
       )
       
-      ci_widths <- replicate(n_sim, {
-        # Simulate one dataset and fit model to it; estimated model
-        new_y <- simulate(model_for_doFit, nsim = 1)[[1]]
-        sim_fit <- simr::doFit(fit = model_for_doFit, y = new_y)
-        # Handle cases where model fitting fails 
-        if(is.null(sim_fit)){
-          NA_real_
-        } else {
-          # Compute CI width from estimated model
-          ci <- confint(sim_fit, parm = coef_name, method = "Wald")
-          ci[2] - ci[1]
-        }
-      })
+      captured_messages <- utils::capture.output({
+        ci_widths <- replicate(n_sim, {
+          # Simulate one data set and fit model to it; estimated model
+          new_y <- simulate(model_for_doFit, nsim = 1)[[1]]
+          sim_fit <- suppressWarnings(simr::doFit(fit = model_for_doFit, y = new_y))
+          # Handle cases where model fitting fails 
+          if(is.null(sim_fit)) {
+            NA_real_
+          } else {
+            # Compute CI width from estimated model
+            ci <- confint(sim_fit, parm = coef_name, method = "Wald")
+            ci[2] - ci[1]
+          }
+        })
+      }, type = "message")
+      
+      # Number of messages is simply the number of lines of text we captured.
+      message_prop <- length(captured_messages) / n_sim
+      
       # Check for any simulation failures (NA widths)
       n_failures <- sum(is.na(ci_widths))
       if (n_failures > 0) {
         message(paste0(
-          "⚠️ Warning: ", n_failures, " out of ", n_sim, 
-          " simulations failed to converge for this combination."
+          "⚠️ Note: ", n_failures, " out of ", n_sim, 
+          " simulations failed to converge and were excluded."
         ))
       }
       
-
       # Calculate the 95th percentile of the CI widths to assess precision
       achieved_precision <- stats::quantile(ci_widths, probs = 0.95, na.rm = TRUE)
       
@@ -119,14 +124,15 @@ aipe_simr <- function(
         n_participants = n_participants,
         n_obs_per_condition = n_obs_per_condition,
         ci_width_quantile = achieved_precision,
-        precision_met = achieved_precision <= target_ci_width
+        precision_met = achieved_precision <= target_ci_width,
+        prop_issues = message_prop
       )
     }
   }
   
   # Combine all results into a single data frame
-  power_results <- dplyr::bind_rows(results_list)
-  
+  aipe_results <- dplyr::bind_rows(results_list)
+    
   message("✅ Simulation complete!")
-  return(power_results)
+  return(aipe_results)
 }
