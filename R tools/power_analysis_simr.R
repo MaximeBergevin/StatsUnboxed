@@ -103,7 +103,7 @@ power_analysis_simr <- function(
       
       # Run the power simulation using simr
       # powerSim handles the entire "simulate > refit > test" loop internally.
-      power_sim_results <- suppressWarnings(
+      power_sim_results <- suppressMessages(
         simr::powerSim(
           model_for_power_sim,
           test = test_to_run,
