@@ -76,7 +76,7 @@ def tms_csp(
     emg_column_name: str,
     output_plot_path: str,
     force_column_name: str = None,
-    m_wave_trigger_text: str = None, # Added parameter for M-wave logic
+    m_wave_trigger_text: str = None,
     time_column_name: str = 'Time',
     tms_trigger_text: str = '#* TMS Pulse',
     pre_stim_baseline_window_ms: tuple = (-100, 0),
@@ -88,10 +88,8 @@ def tms_csp(
     mep_onset_sd_thresh: float = 3.0
 ) -> pd.DataFrame:
     """
-    Analyzes LabChart .txt files with intelligent M-wave detection.
-    1. Finds all M-waves in a file.
-    2. For each section, uses M-waves within that section for Mmax.
-    3. If none, falls back to the closest M-wave in the entire file.
+    Analyzes LabChart .txt files, calculating MEP, CSP, pre-stimulus RMS (short and long window), 
+    and optionally processing a force channel (including mean and CV).
     """
     os.makedirs(output_plot_path, exist_ok=True)
     all_results = []
@@ -120,7 +118,8 @@ def tms_csp(
             print(f"  - Error reading {file_path.name}: {e}. Skipping file.")
             continue
         
-        # --- NEW: Global M-Wave Search (Once per file) ---
+        # Global M-Wave Search (Once per file)
+        # ------------------------------------
         all_m_waves_in_file = []
         if m_wave_trigger_text:
             print("  - Searching for all M-waves in the file...")
@@ -130,13 +129,25 @@ def tms_csp(
             if m_wave_times:
                 for pulse_time in m_wave_times:
                     m_wave_df = df[(df[time_column_name] >= pulse_time) & (df[time_column_name] <= pulse_time + 0.050)]
+                    amplitude = 0
+                    m_wave_auc = 0
+                    
                     if not m_wave_df.empty:
                         amplitude = m_wave_df[emg_column_name].max() - m_wave_df[emg_column_name].min()
-                        all_m_waves_in_file.append({'time': pulse_time, 'amplitude': amplitude})
+                        
+                        # Calculate M-wave AUC
+                        m_wave_baseline_df = df[(df[time_column_name] >= pulse_time - 0.100) & (df[time_column_name] < pulse_time)]
+                        if not m_wave_baseline_df.empty:
+                            baseline_mean_rect = m_wave_baseline_df[emg_column_name].abs().mean()
+                            rectified_m_wave = m_wave_df[emg_column_name].abs()
+                            corrected_rectified = rectified_m_wave - baseline_mean_rect
+                            corrected_rectified[corrected_rectified < 0] = 0
+                            m_wave_auc = np.trapz(y=corrected_rectified, x=m_wave_df[time_column_name])
+
+                    all_m_waves_in_file.append({'time': pulse_time, 'amplitude': amplitude, 'auc': m_wave_auc})
                 print(f"  - Found {len(all_m_waves_in_file)} M-wave(s) in total for this file.")
             else:
                 print("  - No M-wave stimuli found anywhere in this file.")
-        # ---------------------------------------------
 
         # Section Splitting
         # -------------------
@@ -166,7 +177,6 @@ def tms_csp(
             rectified_emg_col = f"{emg_column_name}_rectified"
             section_df[rectified_emg_col] = section_df[emg_column_name].abs()
 
-            # Find and sort all stimuli in the section
             all_stimuli = []
             if m_wave_trigger_text:
                 m_wave_indices = section_df[section_df['Comment'].astype(str).str.contains(m_wave_trigger_text, na=False)].index
@@ -183,26 +193,27 @@ def tms_csp(
                 
             all_stimuli.sort(key=lambda x: x['time'])
             
-            # --- MODIFIED: Intelligent Mmax determination for this section ---
-            m_max_for_section = None
+            # Intelligent Mmax determination for this section
+            # -----------------------------------------------
+            m_max_amp_for_section = None
+            m_max_auc_for_section = None
             if all_m_waves_in_file:
                 section_start_time = section_df[time_column_name].iloc[0]
                 section_end_time = section_df[time_column_name].iloc[-1]
                 
-                # Priority 1: Find M-waves within this section
                 m_waves_in_section = [mw for mw in all_m_waves_in_file if section_start_time <= mw['time'] <= section_end_time]
                 if m_waves_in_section:
-                    m_max_for_section = max(mw['amplitude'] for mw in m_waves_in_section)
-                    print(f"  - Section #{section_num}: Using section-specific Mmax of {m_max_for_section:.4f}")
+                    m_max_amp_for_section = max(mw['amplitude'] for mw in m_waves_in_section)
+                    m_max_auc_for_section = max(mw['auc'] for mw in m_waves_in_section)
+                    print(f"  - Section #{section_num}: Using section-specific Mmax Amp {m_max_amp_for_section:.4f} and Mmax AUC {m_max_auc_for_section:.4f}")
                 else:
-                    # Priority 2: Find the closest M-wave in the entire file
                     section_mean_time = section_df[time_column_name].mean()
                     closest_m_wave = min(all_m_waves_in_file, key=lambda mw: abs(mw['time'] - section_mean_time))
-                    m_max_for_section = closest_m_wave['amplitude']
-                    print(f"  - Section #{section_num}: No M-wave in section. Using closest M-wave (at time {closest_m_wave['time']:.2f}s) with Mmax of {m_max_for_section:.4f}")
+                    m_max_amp_for_section = closest_m_wave['amplitude']
+                    m_max_auc_for_section = closest_m_wave['auc']
+                    print(f"  - Section #{section_num}: No M-wave in section. Using closest M-wave's Amp {m_max_amp_for_section:.4f} and AUC {m_max_auc_for_section:.4f}")
             else:
                  print(f"  - Section #{section_num}: No M-waves in file to use for normalization.")
-            # -----------------------------------------------------------------
 
             print(f"  - Section #{section_num}: Found {len(all_stimuli)} total stimuli. Analyzing and plotting...")
             
@@ -223,8 +234,19 @@ def tms_csp(
                 if stim_type == 'M-Wave':
                     m_wave_df = section_df[(section_df[time_column_name] >= pulse_time) & (section_df[time_column_name] <= pulse_time + 0.050)]
                     amplitude = m_wave_df[emg_column_name].max() - m_wave_df[emg_column_name].min() if not m_wave_df.empty else 0
+                    
+                    m_wave_auc = 0
+                    m_wave_baseline_df = section_df[(section_df[time_column_name] >= pulse_time - 0.100) & (section_df[time_column_name] < pulse_time)]
+                    if not m_wave_baseline_df.empty:
+                        baseline_mean_rect = m_wave_baseline_df[emg_column_name].abs().mean()
+                        rectified_m_wave = m_wave_df[emg_column_name].abs()
+                        corrected_rectified = rectified_m_wave - baseline_mean_rect
+                        corrected_rectified[corrected_rectified < 0] = 0
+                        m_wave_auc = np.trapz(y=corrected_rectified, x=m_wave_df[time_column_name])
+                    
                     ax_emg.plot(plot_window_df[time_column_name], plot_window_df[emg_column_name], color='black', lw=0.5)
                     ax_emg.axvline(pulse_time, color='blue', linestyle='--', label='M-Wave Stimulus')
+                    ax_emg.fill_between(m_wave_df[time_column_name], 0, m_wave_df[emg_column_name], color='purple', alpha=0.3, label=f'M-Wave AUC: {m_wave_auc:.4f}')
                     if not m_wave_df.empty:
                         max_idx, min_idx = m_wave_df[emg_column_name].idxmax(), m_wave_df[emg_column_name].idxmin()
                         ax_emg.plot(m_wave_df.loc[max_idx, time_column_name], m_wave_df.loc[max_idx, emg_column_name], 'o', color='blue', markersize=5)
@@ -232,6 +254,7 @@ def tms_csp(
                     ax_emg.set_title(f"M-Wave at {pulse_time:.3f} s", fontsize=10)
 
                 elif stim_type == 'TMS':
+                    # MEP Amplitude Calculation
                     mep_start_time = pulse_time + (mep_window_ms[0] / 1000.0)
                     mep_end_time = pulse_time + (mep_window_ms[1] / 1000.0)
                     mep_df = section_df[(section_df[time_column_name] >= mep_start_time) & (section_df[time_column_name] <= mep_end_time)]
@@ -243,28 +266,36 @@ def tms_csp(
                         mep_max_val, mep_min_val = mep_df.loc[max_idx, emg_column_name], mep_df.loc[min_idx, emg_column_name]
                         mep_max_time, mep_min_time = mep_df.loc[max_idx, time_column_name], mep_df.loc[min_idx, time_column_name]
 
+                    # Short Pre-stimulus Baseline (for thresholds)
+                    # ----------------------------------------------
                     short_pre_stim_df = section_df[(section_df[time_column_name] >= pulse_time + (pre_stim_baseline_window_ms[0] / 1000.0)) & (section_df[time_column_name] < pulse_time + (pre_stim_baseline_window_ms[1] / 1000.0))]
-                    long_pre_stim_df = section_df[(section_df[time_column_name] >= pulse_time - long_pre_stim_window_s) & (section_df[time_column_name] < pulse_time)]
-                    short_pre_stim_emg_rms, short_pre_stim_mean_force = float('nan'), float('nan')
-                    long_pre_stim_emg_rms, long_pre_stim_mean_force, long_pre_stim_force_cv = float('nan'), float('nan'), float('nan')
-
-                    if not short_pre_stim_df.empty:
+                    short_pre_stim_emg_rms = float('nan')
+                    short_pre_stim_mean_force = float('nan')
+                    if short_pre_stim_df.empty:
+                        print(f"    - Warning: No short pre-stimulus data for pulse at {pulse_time:.3f}s.")
+                    else:
                         short_pre_stim_emg_rms = np.sqrt(np.mean(short_pre_stim_df[emg_column_name]**2))
                         if local_force_column:
                             short_pre_stim_mean_force = short_pre_stim_df[local_force_column].mean()
+
+                    # Long Pre-stimulus Baseline (for stability measures)
+                    # ---------------------------------------------------
+                    long_pre_stim_df = section_df[(section_df[time_column_name] >= pulse_time - long_pre_stim_window_s) & (section_df[time_column_name] < pulse_time)]
+                    long_pre_stim_emg_rms = float('nan')
+                    long_pre_stim_mean_force = float('nan')
+                    long_pre_stim_force_cv = float('nan')
+                    if long_pre_stim_df.empty:
+                        print(f"    - Warning: No long pre-stimulus data for pulse at {pulse_time:.3f}s.")
                     else:
-                        print(f"    - Warning: No short pre-stimulus data for pulse at {pulse_time:.3f}s.")
-                    
-                    if not long_pre_stim_df.empty:
                         long_pre_stim_emg_rms = np.sqrt(np.mean(long_pre_stim_df[emg_column_name]**2))
                         if local_force_column:
                             force_data = long_pre_stim_df[local_force_column]
                             long_pre_stim_mean_force = force_data.mean()
                             if long_pre_stim_mean_force != 0:
-                                long_pre_stim_force_cv = (force_data.std() / abs(long_pre_stim_mean_force)) * 100
-                    else:
-                        print(f"    - Warning: No long pre-stimulus data for pulse at {pulse_time:.3f}s.")
-
+                               long_pre_stim_force_cv = (force_data.std() / abs(long_pre_stim_mean_force)) * 100
+                    
+                    # Dynamic MEP Window and AUC Calculation
+                    # ---------------------------------------
                     mep_auc = 0
                     if not short_pre_stim_df.empty:
                         rectified_baseline_emg = short_pre_stim_df[emg_column_name].abs()
@@ -280,7 +311,8 @@ def tms_csp(
                         offset_point = offset_search_df[(offset_search_df[emg_column_name] < upper_thresh) & (offset_search_df[emg_column_name] > lower_thresh)]
                         auc_end_time = offset_point.iloc[0][time_column_name] if not offset_point.empty else None
                         if auc_start_time is None or auc_end_time is None:
-                            auc_start_time, auc_end_time = pulse_time + (mep_auc_window_ms[0] / 1000.0), pulse_time + (mep_auc_window_ms[1] / 1000.0)
+                            auc_start_time = pulse_time + (mep_auc_window_ms[0] / 1000.0)
+                            auc_end_time = pulse_time + (mep_auc_window_ms[1] / 1000.0)
                         mep_auc_df = section_df[(section_df[time_column_name] >= auc_start_time) & (section_df[time_column_name] <= auc_end_time)].copy()
                         if not mep_auc_df.empty:
                             rectified_mep = mep_auc_df[emg_column_name].abs()
@@ -289,12 +321,14 @@ def tms_csp(
                             mep_auc = np.trapz(y=corrected_rectified_mep, x=mep_auc_df[time_column_name])
                     else:
                         mep_auc_df = pd.DataFrame()
-
+                    
+                    # CSP Detection
+                    # ----------------
                     csp_end_time, csp_duration_ms, csp_threshold_value = None, float('nan'), 0
                     if not short_pre_stim_df.empty:
                         rectified_baseline_emg = short_pre_stim_df[emg_column_name].abs()
                         csp_threshold_value = rectified_baseline_emg.quantile(csp_threshold_percentile)
-                        csp_search_start = pulse_time + (mep_window_ms[1] / 1000.0) + 0.05
+                        csp_search_start = pulse_time + (mep_window_ms[1] / 1000.0) + 0.05 # 50ms after MEP window
                         csp_search_end = pulse_time + (csp_search_window_ms / 1000.0)
                         csp_search_df = section_df[(section_df[time_column_name] > csp_search_start) & (section_df[time_column_name] <= csp_search_end)]
                         if not csp_search_df.empty:
@@ -302,18 +336,24 @@ def tms_csp(
                             if not activity_return_df.empty:
                                 csp_end_time = activity_return_df.iloc[0][time_column_name]
                                 csp_duration_ms = (csp_end_time - pulse_time) * 1000.0
-
+                    
+                    # MEP Normalization
+                    # -------------------
                     mep_amplitude_normalized, mep_auc_normalized = float('nan'), float('nan')
-                    if m_max_for_section and m_max_for_section > 0:
-                        mep_amplitude_normalized = (mep_amplitude / m_max_for_section) * 100
-                        mep_auc_normalized = (mep_auc / m_max_for_section) * 100
+                    if m_max_amp_for_section and m_max_amp_for_section > 0:
+                        mep_amplitude_normalized = (mep_amplitude / m_max_amp_for_section) * 100
+                    if m_max_auc_for_section and m_max_auc_for_section > 0:
+                        mep_auc_normalized = (mep_auc / m_max_auc_for_section) * 100
 
+                    # Store Results
+                    # ---------------
                     results_to_append = {
                         'filename': file_path.name, 'section': section_num, 'pulse_time_s': pulse_time,
                         'mep_amplitude': mep_amplitude, 'mep_auc': mep_auc, 'csp_duration_ms': csp_duration_ms,
                         'mep_amplitude_percent_mmax': mep_amplitude_normalized, 'mep_auc_percent_mmax': mep_auc_normalized,
-                        'mmax_used': m_max_for_section, 
-                        'short_pre_stim_emg_rms': short_pre_stim_emg_rms, 'long_pre_stim_emg_rms': long_pre_stim_emg_rms,
+                        'mmax_amp_used': m_max_amp_for_section, 'mmax_auc_used': m_max_auc_for_section,
+                        'short_pre_stim_emg_rms': short_pre_stim_emg_rms,
+                        'long_pre_stim_emg_rms': long_pre_stim_emg_rms,
                     }
                     if local_force_column:
                         results_to_append.update({
@@ -321,8 +361,11 @@ def tms_csp(
                             'long_pre_stim_mean_force': long_pre_stim_mean_force,
                             'long_pre_stim_force_cv': long_pre_stim_force_cv
                         })
+                    
                     all_results.append(results_to_append)
 
+                    # Facetted Plotting Logic
+                    # -------------------------
                     ax_emg.plot(plot_window_df[time_column_name], plot_window_df[emg_column_name], color='black', lw=0.5)
                     ax_emg.axvline(pulse_time, color='red', linestyle='--', label=f'TMS Pulse')
                     ax_emg.axhline(csp_threshold_value, color='blue', linestyle=':', lw=1, label=f'CSP Threshold')
@@ -336,13 +379,14 @@ def tms_csp(
                         ax_emg.axvline(csp_end_time, color='orange', linestyle='--', label=f'CSP End')
                     ax_emg.set_title(f"TMS Pulse at {pulse_time:.3f} s", fontsize=10)
 
+                # Common plotting setup for both M-Wave and TMS
                 ax_emg.set_ylabel(f"EMG Amp ({emg_column_name})")
                 ax_emg.legend(loc='upper right', fontsize=8)
                 ax_emg.grid(True, linestyle='--', alpha=0.6)
 
                 if local_force_column:
                     ax_force = axes[ax_idx + 1]
-                    ax_emg.get_shared_x_axes().joined(ax_emg, ax_force)
+                    ax_emg.get_shared_x_axes().join(ax_emg, ax_force)
                     ax_force.plot(plot_window_df[time_column_name], plot_window_df[local_force_column], color='green', lw=0.5, linestyle='--')
                     ax_force.set_ylabel(f"Force ({local_force_column})")
                     ax_force.set_xlabel("Time (s)")
@@ -351,6 +395,8 @@ def tms_csp(
                 else:
                     ax_emg.set_xlabel("Time (s)")
             
+            # Save Figure
+            # -------------
             fig.suptitle(f'Analysis for: {file_path.name} - Section #{section_num}', fontsize=16, y=1.0)
             fig.tight_layout(rect=[0, 0, 1, 0.98], h_pad=3.0)
             plot_filename = f"{filename_no_ext}_Section_{section_num}.jpg"
@@ -360,3 +406,4 @@ def tms_csp(
 
     print("\n✅ Analysis complete.")
     return pd.DataFrame(all_results)
+
