@@ -128,4 +128,5 @@ if __name__ == "__main__":
             
     else:
         print("\n--- Analysis finished, but no results were generated. ---")
+
         print("Please check the console for warnings about missing files or columns.")
